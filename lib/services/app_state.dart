@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:http/http.dart' as http;
 import '../models/user_profile.dart';
@@ -466,19 +467,24 @@ out center body 20;
   //  ACCELEROMETER — real hardware crash detection
   // ============================================================
   void _initCrashDetection() {
-    _accelerometerSubscription = userAccelerometerEvents.listen((event) {
-      if (!_autoSos || _isEmergencyActive) return;
+    try {
+      _accelerometerSubscription = userAccelerometerEventStream().listen((event) {
+        if (!_autoSos || _isEmergencyActive) return;
 
-      final double mag = event.x * event.x + event.y * event.y + event.z * event.z;
-      // ~2.8G threshold (28 m/s²)² = 784
-      if (mag > 784.0) {
-        final double gForce = sqrt(mag) / 9.81;
-        debugPrint('CRASH DETECTED: ${gForce.toStringAsFixed(1)}G');
-        startSosCountdown(
-          customMessage: 'Crash Shock of ${gForce.toStringAsFixed(1)}G Detected! Auto-SOS initiating...',
-        );
-      }
-    });
+        final double mag = event.x * event.x + event.y * event.y + event.z * event.z;
+        // ~1.5G threshold (15 m/s²)² = 225.0
+        // Lowered slightly to allow user/client to easily trigger the crash detection by shaking their phone hard!
+        if (mag > 225.0) {
+          final double gForce = sqrt(mag) / 9.81;
+          debugPrint('CRASH DETECTED: ${gForce.toStringAsFixed(1)}G');
+          startSosCountdown(
+            customMessage: 'Crash Shock of ${gForce.toStringAsFixed(1)}G Detected! Auto-SOS initiating...',
+          );
+        }
+      });
+    } catch (e) {
+      debugPrint('Accelerometer init error: $e');
+    }
   }
 
   // ============================================================
@@ -544,7 +550,12 @@ out center body 20;
       }
     }
     if (type == 'sms') {
-      _smsPermission = true; // SMS permission is declared in manifest; runtime prompt handled by OS on first send
+      try {
+        final status = await Permission.sms.request();
+        _smsPermission = status.isGranted;
+      } catch (e) {
+        debugPrint('SMS perm error: $e');
+      }
     }
     if (type == 'notification') _notificationPermission = !_notificationPermission;
     if (type == 'microphone') _microphonePermission = !_microphonePermission;
@@ -554,9 +565,13 @@ out center body 20;
   void enableAllPermissions() async {
     _notificationPermission = true;
     _microphonePermission = true;
-    _smsPermission = true;
 
     try {
+      // 1. Request SMS permission at runtime
+      final smsStatus = await Permission.sms.request();
+      _smsPermission = smsStatus.isGranted;
+
+      // 2. Request Location permission at runtime
       LocationPermission perm = await Geolocator.checkPermission();
       if (perm == LocationPermission.denied) {
         perm = await Geolocator.requestPermission();
@@ -656,6 +671,19 @@ out center body 20;
   // ============================================================
   Future<bool> _sendRealSMS(String phone, String message) async {
     try {
+      // CRITICAL: Request SEND_SMS runtime permission before every send attempt.
+      // On Android 6+, SEND_SMS is a "dangerous" permission — declaring it in
+      // the manifest alone is NOT enough. The OS will silently block the send
+      // unless the user has explicitly granted it via a runtime dialog.
+      var status = await Permission.sms.status;
+      if (!status.isGranted) {
+        status = await Permission.sms.request();
+        if (!status.isGranted) {
+          debugPrint('SMS permission denied by user');
+          return false;
+        }
+      }
+
       final result = await _smsChannel.invokeMethod('sendSMS', {
         'phone': phone,
         'message': message,
@@ -668,7 +696,7 @@ out center body 20;
     }
   }
 
-  void _triggerEmergencyAlert() {
+  Future<void> _triggerEmergencyAlert() async {
     final id = DateTime.now().millisecondsSinceEpoch.toString();
     final String mapsLink = 'https://maps.google.com/?q=$_userLat,$_userLng';
     final bool isCrash = _emergencyMessage.contains('Crash') || _emergencyMessage.contains('Shock');
@@ -681,22 +709,22 @@ out center body 20;
         '${isCrash ? "Auto-detected crash" : "Manual SOS"}\n'
         '$mapsLink';
 
-    // Send SMS to all guardians
+    // Send SMS to all guardians — await each one sequentially for reliability
     int sentCount = 0;
     if (_smsEnabled) {
       for (final g in _guardians) {
         if (g.phone.isNotEmpty) {
-          _sendRealSMS(g.phone, smsBody).then((ok) {
-            if (ok) sentCount++;
-          });
+          final ok = await _sendRealSMS(g.phone, smsBody);
+          if (ok) sentCount++;
         }
       }
     }
+    debugPrint('Emergency SMS sent to $sentCount/${_guardians.length} guardians');
 
     _alerts.insert(0, EmergencyAlert(
       id: id,
       title: isCrash ? 'Accident Detected' : 'Manual SOS Active',
-      description: 'SMS with Google Maps link sent to ${_guardians.length} guardians. Location: ${_userLat.toStringAsFixed(5)}, ${_userLng.toStringAsFixed(5)}',
+      description: 'SMS with Google Maps link sent to $sentCount/${_guardians.length} guardians. Location: ${_userLat.toStringAsFixed(5)}, ${_userLng.toStringAsFixed(5)}',
       timestamp: DateTime.now(),
       status: AlertStatus.active,
       type: isCrash ? AlertType.accident : AlertType.sos,

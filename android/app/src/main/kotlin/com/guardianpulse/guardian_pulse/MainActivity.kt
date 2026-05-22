@@ -17,11 +17,13 @@ class MainActivity : FlutterActivity() {
                 val message = call.argument<String>("message")
                 if (phone != null && message != null) {
                     try {
-                        val smsManager: SmsManager = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                            context.getSystemService(SmsManager::class.java)
-                        } else {
+                        var smsManager: SmsManager? = null
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                            smsManager = context.getSystemService(SmsManager::class.java)
+                        }
+                        if (smsManager == null) {
                             @Suppress("DEPRECATION")
-                            SmsManager.getDefault()
+                            smsManager = SmsManager.getDefault()
                         }
 
                         // Clean phone number: remove all spaces, dashes, parentheses
