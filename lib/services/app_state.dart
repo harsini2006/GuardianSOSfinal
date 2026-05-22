@@ -63,9 +63,9 @@ class AppState extends ChangeNotifier {
   bool _isTrackingActive = false;
   double _currentSpeedKmh = 0.0;
   double _gpsAccuracyMeter = 0.0;
-  double _userLat = 0.0;
-  double _userLng = 0.0;
-  bool _locationReady = false;
+  double _userLat = 12.9716;
+  double _userLng = 77.5946;
+  bool _locationReady = true;
 
   bool get isTrackingActive => _isTrackingActive;
   double get mockSpeedKmh => _currentSpeedKmh;
@@ -134,36 +134,55 @@ class AppState extends ChangeNotifier {
   Future<void> _initGps() async {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) return;
+      if (!serviceEnabled) {
+        _fetchRealTimeWeather(_userLat, _userLng);
+        _fetchOsmNearby(_userLat, _userLng);
+        return;
+      }
 
       LocationPermission perm = await Geolocator.checkPermission();
       if (perm == LocationPermission.denied) {
         perm = await Geolocator.requestPermission();
       }
-      if (perm == LocationPermission.deniedForever) return;
+      if (perm == LocationPermission.deniedForever) {
+        _fetchRealTimeWeather(_userLat, _userLng);
+        _fetchOsmNearby(_userLat, _userLng);
+        return;
+      }
 
       _locationPermission = (perm == LocationPermission.always || perm == LocationPermission.whileInUse);
-      if (!_locationPermission) return;
+      if (!_locationPermission) {
+        _fetchRealTimeWeather(_userLat, _userLng);
+        _fetchOsmNearby(_userLat, _userLng);
+        return;
+      }
 
-      // One-shot high accuracy fix
-      final pos = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-      );
-      _applyPosition(pos);
+      // Fast initial lock with last known position
+      final lastPos = await Geolocator.getLastKnownPosition();
+      if (lastPos != null) {
+        _applyPosition(lastPos);
+      } else {
+        _fetchRealTimeWeather(_userLat, _userLng);
+        _fetchOsmNearby(_userLat, _userLng);
+      }
 
-      // Continuous stream
+      // Continuous medium accuracy stream with timeout safety
       _positionSubscription = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
+          accuracy: LocationAccuracy.medium,
           distanceFilter: 3,
         ),
       ).listen(_applyPosition);
     } catch (e) {
       debugPrint('GPS init error: $e');
+      _fetchRealTimeWeather(_userLat, _userLng);
+      _fetchOsmNearby(_userLat, _userLng);
     }
   }
 
   void _applyPosition(Position pos) {
+    final bool hasMovedSignificantly = (pos.latitude - _userLat).abs() > 0.005 || (pos.longitude - _userLng).abs() > 0.005;
+
     _userLat = pos.latitude;
     _userLng = pos.longitude;
     _gpsAccuracyMeter = pos.accuracy;
@@ -174,14 +193,14 @@ class AppState extends ChangeNotifier {
       _currentSpeedKmh = pos.speed * 3.6;
     }
 
-    // Fetch real nearby places from OpenStreetMap (once, or when user moves >1 km)
-    if (!_osmFetched) {
+    // Fetch real nearby places from OpenStreetMap (once, or when user moves significantly)
+    if (!_osmFetched || hasMovedSignificantly) {
       _osmFetched = true;
       _fetchOsmNearby(pos.latitude, pos.longitude);
     }
 
     // Fetch real weather and road environment conditions
-    if (!_weatherFetched) {
+    if (!_weatherFetched || hasMovedSignificantly) {
       _weatherFetched = true;
       _fetchRealTimeWeather(pos.latitude, pos.longitude);
     }
