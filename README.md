@@ -501,7 +501,7 @@ Guardians are trusted contacts who can receive emergency notifications.
 
 ### ADD
 
-**ADD**
+
 
 Add a trusted emergency contact.
 
@@ -511,7 +511,6 @@ Add a trusted emergency contact.
 
 ### MANAGE
 
-**MANAGE**
 
 Manage guardian information and emergency communication settings.
 
@@ -521,7 +520,7 @@ Manage guardian information and emergency communication settings.
 
 ### ALERT
 
-**ALERT**
+
 
 Send emergency information when an SOS event occurs.
 
